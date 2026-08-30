@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from schemas import Message, UserSchema, UserPublic, UserDB, UserList
+from fast_zero.schemas import Message, UserSchema, UserPublic, UserDB, UserList
 from http import HTTPStatus
 import logging
 
