@@ -1,6 +1,14 @@
-from fastapi import FastAPI, HTTPException
-from fast_zero.schemas import Message, UserSchema, UserPublic, UserDB, UserList
 from http import HTTPStatus
+
+from fastapi import Depends, FastAPI, HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+
+from fast_zero.database import get_session
+from fast_zero.models import User
+from fast_zero.schemas import Message, UserList, UserPublic, UserSchema
+
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -10,37 +18,86 @@ database = []
 
 app = FastAPI()
 
-@app.get('/', status_code=HTTPStatus.OK, response_model=Message)
+
+@app.get("/", status_code=HTTPStatus.OK, response_model=Message)
 def read_root():
-    return {'message': 'Olá FastAPI!'}
+    return {"message": "Olá FastAPI!"}
+
 
 @app.post('/users/', status_code=HTTPStatus.CREATED, response_model=UserPublic)
-def create_user(user: UserSchema):
-    user_with_id = UserDB(**user.model_dump(), id=len(database) + 1)  
+def create_user(user: UserSchema, session: Session = Depends(get_session)):
+    db_user = session.scalar(
+        select(User).where(
+            (User.username == user.username) | (User.email == user.email)
+        )
+    )
 
-    database.append(user_with_id)
-    logger.info("Database: %s", database)
-    return user_with_id
+    if db_user:
+        if db_user.username == user.username:
+            raise HTTPException(
+                status_code=HTTPStatus.CONFLICT,
+                detail='Username already exists',
+            )
+        elif db_user.email == user.email:
+            raise HTTPException(
+                status_code=HTTPStatus.CONFLICT,
+                detail='Email already exists',
+            )
 
-@app.get('/users/', status_code=HTTPStatus.OK, response_model=UserList)
-def read_users():
-    return {'users': database}
+    db_user = User(
+        username=user.username, password=user.password, email=user.email
+    )
+    session.add(db_user)
+    session.commit()
+    session.refresh(db_user)
+
+    return db_user
+
+
+@app.get("/users/", status_code=HTTPStatus.OK, response_model=UserList)
+def read_users(
+    skip: int = 0, limit: int = 100, session: Session = Depends(get_session)
+):
+    users = session.scalars(select(User).offset(skip).limit(limit)).all()
+    return {'users': users}
+
 
 @app.put('/users/{user_id}', response_model=UserPublic)
-def update_user(user_id: int, user: UserSchema):
-    if user_id > len(database) or user_id < 1:
-        raise HTTPException(
-            status_code=HTTPStatus.NOT_FOUND, detail='User not found'
-        )
-    user_with_id = UserDB(**user.model_dump(), id=user_id)
-    database[user_id - 1] = user_with_id    
-    return user_with_id
+def update_user(
+    user_id: int, user: UserSchema, session: Session = Depends(get_session)
+):
 
-@app.delete('/users/{user_id}', response_model=Message)
-def delete_user(user_id: int):
-    if user_id > len(database) or user_id < 1:
+    db_user = session.scalar(select(User).where(User.id == user_id))
+    if not db_user:
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='User not found'
         )
-    del database[user_id - 1]
-    return {'message': 'User deleted'}
+
+    try:
+        db_user.username = user.username
+        db_user.password = user.password
+        db_user.email = user.email
+        session.commit()
+        session.refresh(db_user)
+
+        return db_user
+
+    except IntegrityError: 
+        raise HTTPException(
+            status_code=HTTPStatus.CONFLICT, 
+            detail='Username or Email already exists'
+        )
+
+@app.delete("/users/{user_id}", response_model=Message)
+def delete_user(user_id: int, session: Session = Depends(get_session)):
+    db_user = session.scalar(select(User).where(User.id == user_id))
+    
+    if not db_user:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail='User not found'
+        )
+        
+    session.delete(db_user)
+    session.commit()
+    
+    return{'message': 'User deleted'}
